@@ -1,0 +1,132 @@
+diff --git a/yttool.py b/yttool.py
+index a2c94b4..cd7636a 100755
+--- a/yttool.py
++++ b/yttool.py
+@@ -14,28 +14,37 @@ import json
+ import sys
+ import html
+ import datetime
++import logging
+ from collections import defaultdict
+ from xml.parsers.expat import ParserCreate
+ 
+ import http.client
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ def load_socks_proxy(proxyarg):
++    logger.debug("Attempting to configure SOCKS proxy from argument '%s'", proxyarg)
+     m = re.match(r'(?:(\w+)://)?(\S+):(\d+)', proxyarg)
+     if not m:
++        logger.warning("No matching SOCKS proxy pattern for argument '%s'", proxyarg)
+         return
+     method, host, port = m.groups()
+     port = int(port)
+ 
+     if not method or not method.startswith('socks'):
++        logger.warning("Proxy argument '%s' does not specify a SOCKS scheme", proxyarg)
+         return
+ 
+     import socks
++    logger.info("Configuring SOCKS proxy %s://%s:%s", method, host, port)
+     socks.setdefaultproxy(socks.SOCKS4 if method.startswith('socks4') else socks.SOCKS5, host, port)
++
+     def create_connection(address, timeout=None, source_address=None):
+         sock = socks.socksocket()
+         sock.connect(address)
+         return sock
++
+     import socket
+     socket.create_connection = create_connection
+     socket.socket = socks.socksocket
+@@ -114,6 +123,7 @@ class Youtube:
+     Class which knows how to get information from youtune video's
+     """
+     def __init__(self, args):
++        logger.info("Initializing YouTube client")
+         self.args = args
+         cj = http.cookiejar.CookieJar()
+         cj.set_cookie(http.cookiejar.Cookie(version=0, name="CONSENT", value="YES+cb.20210420-15-p1.en+FX+374", port=None, port_specified=False, domain=".youtube.com", domain_specified=True, domain_initial_dot=True, path="/", path_specified=True, secure=False, expires=None, discard=False, comment=None, comment_url=None, rest={}))
+@@ -133,18 +143,22 @@ class Youtube:
+         self.clientversion =  "2.20210422.04.00"                           # "INNERTUBE_CONTEXT_CLIENT_VERSION": "2.20210404.08.00",
+         self.idtoken = "QUFFLUhqa1oySl9mbm9mODhfdENjQWdDcENvazM2RS1qZ3w="  # "ID_TOKEN": "QUFFLUhqa1oySl9mbm9mODhfdENjQWdDcENvazM2RS1qZ3w=",
+ 
++        logger.debug("Fetching YouTube homepage to retrieve configuration")
+         html = self.httpreq("https://www.youtube.com/")
+         cfg = self.getytcfg(html.decode('utf-8'))
+ 
+         self.innertubeapikey = cfg.get("INNERTUBE_API_KEY")
+         self.clientname =      cfg.get("INNERTUBE_CONTEXT_CLIENT_NAME")
+         self.clientversion =   cfg.get("INNERTUBE_CONTEXT_CLIENT_VERSION")
++        logger.info("YouTube client initialized with version %s", self.clientversion)
+         
+ 
+     def httpreq(self, url, data=None):
+         """
+         Does GET or POST request to youtube.
+         """
++        method = "POST" if data is not None else "GET"
++        logger.debug("Sending %s request to %s", method, url)
+         hdrs = {
+             "x-youtube-client-name": "1",
+             "x-youtube-client-version": self.clientversion,
+@@ -163,11 +177,11 @@ class Youtube:
+         response = self.opener.open(req, **kwargs)
+         try:
+             page = response.read()
++            logger.debug("Received %d bytes from %s", len(page), url)
+         except http.client.IncompleteRead as e:
+             page = e.partial
++            logger.warning("Incomplete HTTP read from %s; %d bytes received", url, len(page))
+             print("EXCEPTION FOUND: http.client.IncompleteRead")
+-            pass
+-
+         return page
+ 
+     def getcomments(self, cont, xsrf, replies=False):
+@@ -176,9 +190,12 @@ class Youtube:
+         """
+         cmd = getitem(cont, "continuationEndpoint") or getitem(cont, "button", "buttonRenderer", "command")
+         url = getitem(cmd, "commandMetadata", "webCommandMetadata", "apiUrl")
++        token = getitem(cmd, "continuationCommand", "token")
++        masked_token = f"{token[:20]}..." if token else None
++        logger.debug("Fetching %s comments via %s (token=%s)", "reply" if replies else "top-level", url, masked_token)
+         postreq = {
+             "context":{"client":{"clientName":"WEB","clientVersion":self.clientversion}},
+-            "continuation": getitem(cmd, "continuationCommand", "token"),
++            "continuation": token,
+         }
+ 
+         return self.httpreq("https://www.youtube.com" + url + "?" + urllib.parse.urlencode({"key":self.innertubeapikey}), json.dumps(postreq).encode('utf-8') )
+@@ -187,6 +204,8 @@ class Youtube:
+         """
+         Returns chat for the specified continuation parameter.
+         """
++        chat_type = "live" if live else "replay"
++        logger.debug("Fetching %s chat with continuation %s...", chat_type, cont[:20] if cont else None)
+         if live:
+             url = "https://www.youtube.com/live_chat"
+         else:
+@@ -202,6 +221,8 @@ class Youtube:
+         """
+         Returns chat for the specified continuation parameter.
+         """
++        chat_type = "live" if live else "replay"
++        logger.debug("Fetching %s chat (v2) with continuation %s and offset %s", chat_type, cont[:20] if cont else None, offset)
+         if live:
+             url = "https://www.youtube.com/youtubei/v1/live_chat_replay/get_live_chat"
+         else:
+@@ -1056,6 +1077,12 @@ def main():
+     parser.add_argument('ytids', nargs='+', type=str, help='One or more Youtube URLs, or IDs, or a query')
+     args = parser.parse_args()
+ 
++    log_level = logging.DEBUG if args.debug else logging.INFO if args.verbose else logging.WARNING
++    logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
++    
++    logger.info("Starting yttool")
++    logger.debug("Arguments: %s", vars(args))
++
+     if args.proxy and args.proxy.startswith('socks'):
+         load_socks_proxy(args.proxy)
+ 
